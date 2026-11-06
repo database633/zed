@@ -348,15 +348,13 @@ impl MultiWorkspace {
             }
         });
         let settings_subscription = cx.observe_global_in::<settings::SettingsStore>(window, {
-            let mut previous_multi_workspace_enabled = !DisableAiSettings::get_global(cx)
-                .disable_ai
-                && AgentSettings::get_global(cx).enabled;
+            let mut previous_project_tabs_enabled = true;
             move |this, window, cx| {
-                let multi_workspace_enabled = this.multi_workspace_enabled(cx);
-                if previous_multi_workspace_enabled && !multi_workspace_enabled {
+                let project_tabs_enabled = this.project_tabs_enabled(cx);
+                if previous_project_tabs_enabled && !project_tabs_enabled {
                     this.collapse_to_single_workspace(window, cx);
                 }
-                previous_multi_workspace_enabled = multi_workspace_enabled;
+                previous_project_tabs_enabled = project_tabs_enabled;
             }
         });
         Self::subscribe_to_workspace(&workspace, window, cx);
@@ -425,6 +423,15 @@ impl MultiWorkspace {
 
     pub fn multi_workspace_enabled(&self, cx: &App) -> bool {
         !DisableAiSettings::get_global(cx).disable_ai && AgentSettings::get_global(cx).enabled
+    }
+
+    /// Whether this window keeps multiple projects open as browser-style tabs.
+    ///
+    /// Deliberately independent of the agent/AI settings that gate the agent
+    /// sidebar ([`Self::multi_workspace_enabled`]), so project tabs keep working
+    /// even when AI features are turned off.
+    pub fn project_tabs_enabled(&self, _cx: &App) -> bool {
+        true
     }
 
     pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1327,7 +1334,7 @@ impl MultiWorkspace {
 
         let old_active_workspace = self.workspace().clone();
         let old_active_was_retained = self.active_workspace_is_retained();
-        let should_retain_workspaces = self.multi_workspace_enabled(cx);
+        let should_retain_workspaces = self.project_tabs_enabled(cx);
 
         if should_retain_workspaces && !old_active_was_retained {
             let key = old_active_workspace.read(cx).project_group_key(cx);
@@ -1937,7 +1944,7 @@ impl MultiWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<Workspace>>> {
-        if self.multi_workspace_enabled(cx) {
+        if self.project_tabs_enabled(cx) {
             let empty_workspace = if self
                 .workspace()
                 .read(cx)
@@ -2088,7 +2095,13 @@ impl Render for MultiWorkspace {
 
         let workspace = self.workspace().clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
-        let root = workspace.update(cx, |workspace, cx| workspace.actions(h_flex(), window, cx));
+        let root = workspace.update(cx, |workspace, cx| workspace.actions(v_flex(), window, cx));
+
+        let project_tabs = if self.project_tabs_enabled(cx) {
+            Some(crate::project_tabs::render_project_tabs(self, window, cx))
+        } else {
+            None
+        };
 
         client_side_decorations(
             root.key_context(workspace_key_context)
@@ -2097,30 +2110,8 @@ impl Render for MultiWorkspace {
                 .font(ui_font)
                 .text_color(text_color)
                 .on_action(cx.listener(Self::close_window))
-                .when(self.multi_workspace_enabled(cx), |this| {
-                    this.on_action(cx.listener(
-                        |this: &mut Self, _: &ToggleWorkspaceSidebar, window, cx| {
-                            this.toggle_sidebar(window, cx);
-                        },
-                    ))
-                    .on_action(cx.listener(
-                        |this: &mut Self, _: &CloseWorkspaceSidebar, window, cx| {
-                            this.close_sidebar_action(window, cx);
-                        },
-                    ))
-                    .on_action(cx.listener(
-                        |this: &mut Self, _: &FocusWorkspaceSidebar, window, cx| {
-                            this.focus_sidebar(window, cx);
-                        },
-                    ))
-                    .on_action(cx.listener(
-                        |this: &mut Self, action: &ToggleThreadSwitcher, window, cx| {
-                            if let Some(sidebar) = &this.sidebar {
-                                sidebar.toggle_thread_switcher(action.select_last, window, cx);
-                            }
-                        },
-                    ))
-                    .on_action(cx.listener(|this: &mut Self, _: &NextProject, window, cx| {
+                .when(self.project_tabs_enabled(cx), |this| {
+                    this.on_action(cx.listener(|this: &mut Self, _: &NextProject, window, cx| {
                         if let Some(sidebar) = &this.sidebar {
                             sidebar.cycle_project(true, window, cx);
                         }
@@ -2144,18 +2135,6 @@ impl Render for MultiWorkspace {
                             this.move_project_group_down(&key, cx);
                         }),
                     )
-                    .on_action(cx.listener(|this: &mut Self, _: &NextThread, window, cx| {
-                        if let Some(sidebar) = &this.sidebar {
-                            sidebar.cycle_thread(true, window, cx);
-                        }
-                    }))
-                    .on_action(
-                        cx.listener(|this: &mut Self, _: &PreviousThread, window, cx| {
-                            if let Some(sidebar) = &this.sidebar {
-                                sidebar.cycle_thread(false, window, cx);
-                            }
-                        }),
-                    )
                     .when(self.project_group_keys().len() >= 2, |el| {
                         el.on_action(cx.listener(
                             |this: &mut Self, _: &MoveProjectToNewWindow, window, cx| {
@@ -2166,6 +2145,42 @@ impl Render for MultiWorkspace {
                             },
                         ))
                     })
+                })
+                .when(self.multi_workspace_enabled(cx), |this| {
+                    this.on_action(cx.listener(
+                        |this: &mut Self, _: &ToggleWorkspaceSidebar, window, cx| {
+                            this.toggle_sidebar(window, cx);
+                        },
+                    ))
+                    .on_action(cx.listener(
+                        |this: &mut Self, _: &CloseWorkspaceSidebar, window, cx| {
+                            this.close_sidebar_action(window, cx);
+                        },
+                    ))
+                    .on_action(cx.listener(
+                        |this: &mut Self, _: &FocusWorkspaceSidebar, window, cx| {
+                            this.focus_sidebar(window, cx);
+                        },
+                    ))
+                    .on_action(cx.listener(
+                        |this: &mut Self, action: &ToggleThreadSwitcher, window, cx| {
+                            if let Some(sidebar) = &this.sidebar {
+                                sidebar.toggle_thread_switcher(action.select_last, window, cx);
+                            }
+                        },
+                    ))
+                    .on_action(cx.listener(|this: &mut Self, _: &NextThread, window, cx| {
+                        if let Some(sidebar) = &this.sidebar {
+                            sidebar.cycle_thread(true, window, cx);
+                        }
+                    }))
+                    .on_action(cx.listener(
+                        |this: &mut Self, _: &PreviousThread, window, cx| {
+                            if let Some(sidebar) = &this.sidebar {
+                                sidebar.cycle_thread(false, window, cx);
+                            }
+                        },
+                    ))
                 })
                 .when(
                     self.sidebar_open() && self.multi_workspace_enabled(cx),
@@ -2187,16 +2202,23 @@ impl Render for MultiWorkspace {
                         ))
                     },
                 )
-                .children(left_sidebar)
+                .children(project_tabs)
                 .child(
-                    div()
-                        .flex()
+                    h_flex()
                         .flex_1()
-                        .size_full()
-                        .overflow_hidden()
-                        .child(self.workspace().clone()),
+                        .w_full()
+                        .min_h_0()
+                        .children(left_sidebar)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_1()
+                                .size_full()
+                                .overflow_hidden()
+                                .child(self.workspace().clone()),
+                        )
+                        .children(right_sidebar),
                 )
-                .children(right_sidebar)
                 .child(self.workspace().read(cx).modal_layer.clone())
                 .children(self.sidebar_overlay.as_ref().map(|view| {
                     deferred(div().absolute().size_full().inset_0().occlude().child(

@@ -118,7 +118,7 @@ async fn test_sidebar_disabled_when_disable_ai_is_enabled(cx: &mut TestAppContex
 }
 
 #[gpui::test]
-async fn test_multi_workspace_collapses_when_agent_is_disabled(cx: &mut TestAppContext) {
+async fn test_project_tabs_retained_when_agent_is_disabled(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.executor());
     fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
@@ -136,6 +136,7 @@ async fn test_multi_workspace_collapses_when_agent_is_disabled(cx: &mut TestAppC
 
     multi_workspace.read_with(cx, |multi_workspace, cx| {
         assert!(multi_workspace.multi_workspace_enabled(cx));
+        assert!(multi_workspace.project_tabs_enabled(cx));
         assert_eq!(multi_workspace.workspaces().count(), 2);
     });
 
@@ -147,10 +148,13 @@ async fn test_multi_workspace_collapses_when_agent_is_disabled(cx: &mut TestAppC
     cx.run_until_parked();
 
     multi_workspace.read_with(cx, |multi_workspace, cx| {
+        // The agent sidebar is still gated behind the AI settings...
         assert!(!multi_workspace.multi_workspace_enabled(cx));
         assert!(!multi_workspace.sidebar_open());
-        assert_eq!(multi_workspace.workspaces().count(), 1);
-        assert!(multi_workspace.project_group_keys().is_empty());
+        // ...but project tabs are independent, so both workspaces stay open.
+        assert!(multi_workspace.project_tabs_enabled(cx));
+        assert_eq!(multi_workspace.workspaces().count(), 2);
+        assert!(!multi_workspace.project_group_keys().is_empty());
     });
 }
 

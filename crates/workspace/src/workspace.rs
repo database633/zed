@@ -10,6 +10,7 @@ mod multi_workspace_tests;
 pub mod notifications;
 pub mod pane;
 pub mod pane_group;
+mod project_tabs;
 pub mod path_list {
     pub use util::path_list::{PathList, SerializedPathList};
 }
@@ -11452,7 +11453,7 @@ pub fn open_paths(
                     window.filter(|window| {
                         window
                             .read(cx)
-                            .is_ok_and(|mw| mw.multi_workspace_enabled(cx))
+                            .is_ok_and(|mw| mw.project_tabs_enabled(cx))
                     })
                 });
 

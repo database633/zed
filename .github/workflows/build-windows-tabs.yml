@@ -1,0 +1,91 @@
+name: Build Zed (project tabs) for Windows
+
+# Builds a Windows Inno Setup installer (target/Zed-x86_64.exe) with the
+# browser-style project tab bar, on a GitHub-hosted windows-2022 runner.
+on:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: "Target architecture"
+        required: false
+        default: x86_64
+        type: choice
+        options:
+          - x86_64
+          - aarch64
+  push:
+    branches:
+      - project-tabs
+
+concurrency:
+  group: build-windows-tabs-${{ github.ref }}-${{ inputs.architecture }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        shell: pwsh
+        run: |
+          rustup show
+          rustc --version
+          cargo --version
+
+      - name: Report initial disk space
+        shell: pwsh
+        run: Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
+
+      # Zed's bundle script hardcodes the Community edition of VS. GitHub's
+      # windows-2022 image ships Enterpise/BuildTools at a different path, so
+      # point it at whichever edition actually exists on this runner.
+      - name: Point bundle-windows.ps1 at the runner's Visual Studio edition
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'script/bundle-windows.ps1'
+          $default = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\Launch-VsDevShell.ps1'
+          if (Test-Path $default) {
+            Write-Host "Community edition present; no patch needed."
+            exit 0
+          }
+          foreach ($edition in @('Enterprise', 'Professional', 'BuildTools')) {
+            $candidate = "C:\Program Files\Microsoft Visual Studio\2022\$edition\Common7\Tools\Launch-VsDevShell.ps1"
+            if (Test-Path $candidate) {
+              $script = Get-Content $path -Raw
+              $script = $script.Replace($default, $candidate)
+              Set-Content -Path $path -Value $script -NoNewline
+              Write-Host "Patched VS developer shell -> $candidate"
+              exit 0
+            }
+          }
+          Write-Error "No Visual Studio 2022 developer shell found on this runner"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          # Empty CI hides the release-only env checks and Sentry upload; we
+          # build an unsigned installer.
+          $env:CI = ''
+          ./script/bundle-windows.ps1 -Architecture ${{ inputs.architecture || 'x86_64' }}
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zed-windows-${{ inputs.architecture || 'x86_64' }}-installer
+          path: target/Zed-${{ inputs.architecture || 'x86_64' }}.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Report final disk space
+        if: always()
+        shell: pwsh
+        run: Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}

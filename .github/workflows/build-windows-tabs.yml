@@ -61,6 +61,18 @@ jobs:
         shell: pwsh
         run: Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
 
+      # Fast gate: type-check only the crates we touch so a compile error fails
+      # in ~20 min instead of after the full ~2h release build. The error lines
+      # are emitted as check-run annotations, which are readable without auth.
+      - name: Type-check touched crates
+        shell: pwsh
+        run: |
+          cargo check -p workspace -p title_bar --message-format short 2>&1 | Tee-Object -FilePath check.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content check.log -Tail 30 | ForEach-Object { "::error::$_" }
+            exit 1
+          }
+
       - name: Install uv
         if: env.LOCALIZE == 'zh-CN'
         uses: astral-sh/setup-uv@v5

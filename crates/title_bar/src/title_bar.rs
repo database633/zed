@@ -244,13 +244,56 @@ impl TitleBar {
             .ok()?;
 
         Some(
-            div()
+            h_flex()
                 .flex_1()
                 .min_w_0()
+                .gap_1()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(tabs)
+                .child(div().flex_1().min_w_0().child(tabs))
+                .child(self.render_add_project_button(cx))
                 .into_any_element(),
         )
+    }
+
+    /// The trailing "+" control for adding a project to this window. Uses the
+    /// same recent-projects popover as the project name, so it also offers
+    /// "Open Folder…".
+    fn render_add_project_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let workspace = self.workspace.clone();
+        let focus_handle = workspace
+            .upgrade()
+            .map(|w| w.read(cx).focus_handle(cx))
+            .unwrap_or_else(|| cx.focus_handle());
+
+        let window_project_groups: Vec<_> = self
+            .multi_workspace
+            .as_ref()
+            .and_then(|mw| mw.upgrade())
+            .map(|mw| mw.read(cx).project_group_keys())
+            .unwrap_or_default();
+
+        PopoverMenu::new("project-tabs-add-menu")
+            .menu(move |window, cx| {
+                log::info!(
+                    "project tabs: opening add-project menu ({} project groups)",
+                    window_project_groups.len()
+                );
+                Some(recent_projects::RecentProjects::popover(
+                    workspace.clone(),
+                    window_project_groups.clone(),
+                    None,
+                    focus_handle.clone(),
+                    window,
+                    cx,
+                ))
+            })
+            .trigger_with_tooltip(
+                IconButton::new("add-project-tab", IconName::FolderAdd).icon_size(IconSize::Small),
+                |_window, cx| {
+                    Tooltip::for_action("Add Project", &zed_actions::OpenRecent::default(), cx)
+                },
+            )
+            .anchor(Anchor::TopLeft)
     }
 }
 

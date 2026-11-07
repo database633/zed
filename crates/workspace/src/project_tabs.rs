@@ -34,7 +34,8 @@ fn workspace_tab_label(workspace: &Entity<Workspace>, cx: &App) -> SharedString 
 
 /// Renders a browser-style horizontal strip of tabs, one per workspace held by
 /// this window. Clicking a tab activates that workspace; the close button
-/// removes it; the trailing button adds another project to the window.
+/// removes it. The "add project" control lives in the title bar, which owns the
+/// recent-projects popover.
 pub fn render_project_tabs(
     multi_workspace: &MultiWorkspace,
     window: &mut Window,
@@ -56,6 +57,7 @@ pub fn render_project_tabs(
             .group(group_name.clone())
             .toggle_state(is_active)
             .on_click(cx.listener(move |multi_workspace, _event, window, cx| {
+                log::info!("project tabs: activating workspace tab {ix}");
                 multi_workspace.activate(workspace_to_activate.clone(), None, window, cx);
             }))
             .end_slot(
@@ -65,6 +67,7 @@ pub fn render_project_tabs(
                     .visible_on_hover(group_name)
                     .tooltip(Tooltip::text("Close Project"))
                     .on_click(cx.listener(move |multi_workspace, _event, window, cx| {
+                        log::info!("project tabs: closing workspace tab {ix}");
                         multi_workspace
                             .remove(
                                 [workspace_to_close.clone()],
@@ -89,14 +92,5 @@ pub fn render_project_tabs(
         tab_bar = tab_bar.child(tab);
     }
 
-    tab_bar
-        .end_child(
-            IconButton::new("add-project-tab", IconName::FolderAdd)
-                .icon_size(IconSize::Small)
-                .tooltip(Tooltip::text("Add Project"))
-                .on_click(|_event, window, cx| {
-                    window.dispatch_action(Box::new(zed_actions::OpenRecent::default()), cx);
-                }),
-        )
-        .into_any_element()
+    tab_bar.into_any_element()
 }

@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use gpui::{Entity, MouseButton};
+use gpui::Entity;
 use ui::prelude::*;
 use ui::{Tab, TabPosition, Tooltip};
 
@@ -51,7 +51,7 @@ fn workspace_tab_label(workspace: &Entity<Workspace>, cx: &App) -> SharedString 
 /// flex row collapses and nothing is visible.
 pub fn render_project_tabs(
     multi_workspace: &MultiWorkspace,
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut Context<MultiWorkspace>,
     end_control: Option<AnyElement>,
 ) -> AnyElement {
@@ -66,12 +66,13 @@ pub fn render_project_tabs(
         }
     });
 
+    // Content-sized on purpose: a `flex_1` scroll container consumes all the
+    // remaining width and pushes the trailing "add project" control out of the
+    // clipped area, so it never renders.
     let mut tabs = h_flex()
         .id("project-tabs-list")
-        .flex_1()
-        .min_w_0()
-        .h(Tab::container_height(cx))
-        .overflow_x_scroll();
+        .flex_none()
+        .h(Tab::container_height(cx));
 
     for (ix, workspace) in workspaces.iter().enumerate() {
         let is_active = workspace == &active_workspace;
@@ -131,12 +132,12 @@ pub fn render_project_tabs(
 
     let mut row = h_flex()
         .id("project-tabs")
-        .flex_1()
-        .min_w_0()
+        .flex_none()
+        .w_full()
         .h(Tab::container_height(cx))
-        // Keep clicks on the tabs from also starting a window drag, since the
-        // whole title bar is a drag area.
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .bg(cx.theme().colors().tab_bar_background)
+        .border_b_1()
+        .border_color(cx.theme().colors().border)
         .child(tabs);
 
     if let Some(end_control) = end_control {

@@ -253,45 +253,28 @@ impl TitleBar {
         Some(tabs)
     }
 
-    /// The trailing "+" control for adding a project to this window. Uses the
-    /// same recent-projects popover as the project name, so it also offers
-    /// "Open Folder…".
+    /// The trailing "+" control for adding a project to this window.
+    ///
+    /// A plain `IconButton` is used instead of a `PopoverMenu` trigger: the
+    /// popover element measured to zero size inside the tab row, so the button
+    /// was clickable but invisible.
     fn render_add_project_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let workspace = self.workspace.clone();
-        let focus_handle = workspace
-            .upgrade()
-            .map(|w| w.read(cx).focus_handle(cx))
-            .unwrap_or_else(|| cx.focus_handle());
-
-        let window_project_groups: Vec<_> = self
+        let project_group_count = self
             .multi_workspace
             .as_ref()
             .and_then(|mw| mw.upgrade())
-            .map(|mw| mw.read(cx).project_group_keys())
+            .map(|mw| mw.read(cx).project_group_keys().len())
             .unwrap_or_default();
 
-        PopoverMenu::new("project-tabs-add-menu")
-            .menu(move |window, cx| {
+        IconButton::new("add-project-tab", IconName::FolderAdd)
+            .icon_size(IconSize::Small)
+            .tooltip(Tooltip::text("Add Project"))
+            .on_click(move |_event, window, cx| {
                 log::info!(
-                    "project tabs: opening add-project menu ({} project groups)",
-                    window_project_groups.len()
+                    "project tabs: add-project clicked ({project_group_count} project groups)"
                 );
-                Some(recent_projects::RecentProjects::popover(
-                    workspace.clone(),
-                    window_project_groups.clone(),
-                    None,
-                    focus_handle.clone(),
-                    window,
-                    cx,
-                ))
+                window.dispatch_action(Box::new(zed_actions::OpenRecent::default()), cx);
             })
-            .trigger_with_tooltip(
-                IconButton::new("add-project-tab", IconName::FolderAdd).icon_size(IconSize::Small),
-                |_window, cx| {
-                    Tooltip::for_action("Add Project", &zed_actions::OpenRecent::default(), cx)
-                },
-            )
-            .anchor(Anchor::TopLeft)
     }
 }
 
@@ -389,7 +372,6 @@ impl Render for TitleBar {
         }
 
         let project_tabs = self.render_project_tabs(window, cx);
-        let show_project_tabs = project_tabs.is_some();
 
         children.push(
             h_flex()
@@ -416,20 +398,9 @@ impl Render for TitleBar {
                         .when(render_project_items, |title_bar| {
                             title_bar
                                 .when(title_bar_settings.show_project_items, |title_bar| {
-                                    // With project tabs in the title bar the active tab
-                                    // already names the project, so the plain name label
-                                    // would be redundant.
-                                    let title_bar =
-                                        title_bar.children(self.render_project_host(cx));
-                                    if show_project_tabs {
-                                        title_bar
-                                    } else {
-                                        title_bar.child(self.render_project_name(
-                                            project_name,
-                                            window,
-                                            cx,
-                                        ))
-                                    }
+                                    title_bar
+                                        .children(self.render_project_host(cx))
+                                        .child(self.render_project_name(project_name, window, cx))
                                 })
                                 .when_some(
                                     repository.filter(|_| is_git_enabled),
@@ -446,10 +417,6 @@ impl Render for TitleBar {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .into_any_element(),
         );
-
-        if let Some(project_tabs) = project_tabs {
-            children.push(project_tabs);
-        }
 
         children.push(self.render_collaborator_list(window, cx).into_any_element());
 
@@ -536,13 +503,18 @@ impl Render for TitleBar {
                         .w_full()
                         .children(children),
                 )
+                .children(project_tabs)
                 .into_any_element()
         } else {
             self.platform_titlebar.update(cx, |this, _| {
                 this.set_button_layout(button_layout);
                 this.set_children(children);
             });
-            self.platform_titlebar.clone().into_any_element()
+            v_flex()
+                .w_full()
+                .child(self.platform_titlebar.clone().into_any_element())
+                .children(project_tabs)
+                .into_any_element()
         }
     }
 }

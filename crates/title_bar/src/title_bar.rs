@@ -237,22 +237,20 @@ impl TitleBar {
             return None;
         }
 
+        let add_project_button = self.render_add_project_button(cx).into_any_element();
+
         let tabs = weak
             .update(cx, |multi_workspace, cx| {
-                workspace::project_tabs::render_project_tabs(multi_workspace, window, cx)
+                workspace::project_tabs::render_project_tabs(
+                    multi_workspace,
+                    window,
+                    cx,
+                    Some(add_project_button),
+                )
             })
             .ok()?;
 
-        Some(
-            h_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_1()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(div().flex_1().min_w_0().child(tabs))
-                .child(self.render_add_project_button(cx))
-                .into_any_element(),
-        )
+        Some(tabs)
     }
 
     /// The trailing "+" control for adding a project to this window. Uses the

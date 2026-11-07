@@ -1,8 +1,16 @@
-use gpui::Entity;
+use std::cmp::Ordering;
+
+use gpui::{Entity, MouseButton};
 use ui::prelude::*;
-use ui::{Tab, TabBar, Tooltip};
+use ui::{Tab, TabPosition, Tooltip};
 
 use crate::{MultiWorkspace, RemovalIntent, Workspace};
+
+thread_local! {
+    /// Last number of project tabs rendered. Used to log strip changes once
+    /// instead of on every frame.
+    static LAST_PROJECT_TAB_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
 
 /// The text shown on a project tab: the file names of the workspace's root
 /// paths, joined with a middle dot. Empty projects (no worktrees) show
@@ -32,20 +40,40 @@ fn workspace_tab_label(workspace: &Entity<Workspace>, cx: &App) -> SharedString 
     }
 }
 
-/// Renders a browser-style horizontal strip of tabs, one per workspace held by
-/// this window. Clicking a tab activates that workspace; the close button
-/// removes it. The "add project" control lives in the title bar, which owns the
-/// recent-projects popover.
+/// Renders the browser-style project tabs as a single horizontal row, one tab
+/// per workspace held by this window. Clicking a tab activates that workspace;
+/// the close button removes it. `end_control` is the trailing "add project"
+/// button, provided by the title bar (which owns the recent-projects popover).
+///
+/// The row is laid out by hand rather than with `ui::TabBar`. `TabBar` renders
+/// a full-width element that does not grow, and a `width: 100%` child of a
+/// flex-grow-sized parent resolves to zero width, so a `TabBar` placed in a
+/// flex row collapses and nothing is visible.
 pub fn render_project_tabs(
     multi_workspace: &MultiWorkspace,
     window: &mut Window,
     cx: &mut Context<MultiWorkspace>,
+    end_control: Option<AnyElement>,
 ) -> AnyElement {
     let active_workspace = multi_workspace.workspace().clone();
+    let workspaces: Vec<_> = multi_workspace.workspaces().cloned().collect();
+    let last_index = workspaces.len().saturating_sub(1);
 
-    let mut tab_bar = TabBar::new("project-tabs-bar");
+    LAST_PROJECT_TAB_COUNT.with(|last| {
+        if last.get() != workspaces.len() {
+            last.set(workspaces.len());
+            log::info!("project tabs: rendering {} tab(s)", workspaces.len());
+        }
+    });
 
-    for (ix, workspace) in multi_workspace.workspaces().enumerate() {
+    let mut tabs = h_flex()
+        .id("project-tabs-list")
+        .flex_1()
+        .min_w_0()
+        .h(Tab::container_height(cx))
+        .overflow_x_scroll();
+
+    for (ix, workspace) in workspaces.iter().enumerate() {
         let is_active = workspace == &active_workspace;
         let group_name = SharedString::from(format!("project-tab-{ix}"));
         let label = workspace_tab_label(workspace, cx);
@@ -53,7 +81,16 @@ pub fn render_project_tabs(
         let workspace_to_activate = workspace.clone();
         let workspace_to_close = workspace.clone();
 
+        let position = if ix == 0 {
+            TabPosition::First
+        } else if ix == last_index {
+            TabPosition::Last
+        } else {
+            TabPosition::Middle(Ordering::Equal)
+        };
+
         let tab = Tab::new(("project-tab", ix))
+            .position(position)
             .group(group_name.clone())
             .toggle_state(is_active)
             .on_click(cx.listener(move |multi_workspace, _event, window, cx| {
@@ -89,8 +126,22 @@ pub fn render_project_tabs(
                     .child(Label::new(label).truncate()),
             );
 
-        tab_bar = tab_bar.child(tab);
+        tabs = tabs.child(tab);
     }
 
-    tab_bar.into_any_element()
+    let mut row = h_flex()
+        .id("project-tabs")
+        .flex_1()
+        .min_w_0()
+        .h(Tab::container_height(cx))
+        // Keep clicks on the tabs from also starting a window drag, since the
+        // whole title bar is a drag area.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(tabs);
+
+    if let Some(end_control) = end_control {
+        row = row.child(end_control);
+    }
+
+    row.into_any_element()
 }

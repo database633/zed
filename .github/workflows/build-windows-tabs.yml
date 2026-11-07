@@ -78,13 +78,18 @@ jobs:
           $ErrorActionPreference = 'Stop'
           git clone --depth 1 $env:ZED_I18N_REPO i18n
 
+          # Build the lines as plain strings and join them, because inside @()
+          # the `,` operator binds tighter than `+` and would collapse every
+          # line into a single (invalid) line.
+          $version_line = 'zed_version = "' + $env:ZED_VERSION + '"'
           $config = @(
-            'zed_version = "' + $env:ZED_VERSION + '"',
+            $version_line,
             'zed_repository = "${{ github.server_url }}/${{ github.repository }}"',
             'zed_ref = "${{ github.ref_name }}"',
             'cache_dir = ".cache/zed"'
-          )
+          ) -join "`n"
           Set-Content -Path i18n/config/project.toml -Value $config -Encoding utf8
+          Get-Content i18n/config/project.toml
 
           Push-Location i18n
           uv python install 3.12

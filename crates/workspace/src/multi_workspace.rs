@@ -2095,13 +2095,7 @@ impl Render for MultiWorkspace {
 
         let workspace = self.workspace().clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
-        let root = workspace.update(cx, |workspace, cx| workspace.actions(v_flex(), window, cx));
-
-        let project_tabs = if self.project_tabs_enabled(cx) {
-            Some(crate::project_tabs::render_project_tabs(self, window, cx))
-        } else {
-            None
-        };
+        let root = workspace.update(cx, |workspace, cx| workspace.actions(h_flex(), window, cx));
 
         client_side_decorations(
             root.key_context(workspace_key_context)
@@ -2202,23 +2196,16 @@ impl Render for MultiWorkspace {
                         ))
                     },
                 )
-                .children(project_tabs)
+                .children(left_sidebar)
                 .child(
-                    h_flex()
+                    div()
+                        .flex()
                         .flex_1()
-                        .w_full()
-                        .min_h_0()
-                        .children(left_sidebar)
-                        .child(
-                            div()
-                                .flex()
-                                .flex_1()
-                                .size_full()
-                                .overflow_hidden()
-                                .child(self.workspace().clone()),
-                        )
-                        .children(right_sidebar),
+                        .size_full()
+                        .overflow_hidden()
+                        .child(self.workspace().clone()),
                 )
+                .children(right_sidebar)
                 .child(self.workspace().read(cx).modal_layer.clone())
                 .children(self.sidebar_overlay.as_ref().map(|view| {
                     deferred(div().absolute().size_full().inset_0().occlude().child(

@@ -223,6 +223,37 @@ pub struct TitleBar {
     _diagnostics_subscription: Option<gpui::Subscription>,
 }
 
+impl TitleBar {
+    /// Renders the browser-style project tabs to sit inline in the title bar
+    /// row, between the leading controls and the trailing status items.
+    /// Returns `None` for non-workspace windows or when project tabs are off.
+    fn render_project_tabs(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let weak = self.multi_workspace.clone()?;
+        if !weak.upgrade()?.read(cx).project_tabs_enabled(cx) {
+            return None;
+        }
+
+        let tabs = weak
+            .update(cx, |multi_workspace, cx| {
+                workspace::project_tabs::render_project_tabs(multi_workspace, window, cx)
+            })
+            .ok()?;
+
+        Some(
+            div()
+                .flex_1()
+                .min_w_0()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(tabs)
+                .into_any_element(),
+        )
+    }
+}
+
 impl Render for TitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.multi_workspace.is_none() {
@@ -316,6 +347,9 @@ impl Render for TitleBar {
             }
         }
 
+        let project_tabs = self.render_project_tabs(window, cx);
+        let show_project_tabs = project_tabs.is_some();
+
         children.push(
             h_flex()
                 .h_full()
@@ -341,9 +375,20 @@ impl Render for TitleBar {
                         .when(render_project_items, |title_bar| {
                             title_bar
                                 .when(title_bar_settings.show_project_items, |title_bar| {
-                                    title_bar
-                                        .children(self.render_project_host(cx))
-                                        .child(self.render_project_name(project_name, window, cx))
+                                    // With project tabs in the title bar the active tab
+                                    // already names the project, so the plain name label
+                                    // would be redundant.
+                                    let title_bar =
+                                        title_bar.children(self.render_project_host(cx));
+                                    if show_project_tabs {
+                                        title_bar
+                                    } else {
+                                        title_bar.child(self.render_project_name(
+                                            project_name,
+                                            window,
+                                            cx,
+                                        ))
+                                    }
                                 })
                                 .when_some(
                                     repository.filter(|_| is_git_enabled),
@@ -360,6 +405,10 @@ impl Render for TitleBar {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .into_any_element(),
         );
+
+        if let Some(project_tabs) = project_tabs {
+            children.push(project_tabs);
+        }
 
         children.push(self.render_collaborator_list(window, cx).into_any_element());
 

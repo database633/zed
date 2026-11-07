@@ -141,7 +141,9 @@ pub fn render_project_tabs(
         .child(tabs);
 
     if let Some(end_control) = end_control {
-        row = row.child(end_control);
+        // Leave a gap after the last tab so the control's hover background does
+        // not sit flush against the tab's right border.
+        row = row.child(div().ml_2().child(end_control));
     }
 
     row.into_any_element()

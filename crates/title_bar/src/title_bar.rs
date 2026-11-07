@@ -266,8 +266,9 @@ impl TitleBar {
             .map(|mw| mw.read(cx).project_group_keys().len())
             .unwrap_or_default();
 
-        IconButton::new("add-project-tab", IconName::FolderAdd)
+        IconButton::new("add-project-tab", IconName::Plus)
             .icon_size(IconSize::Small)
+            .icon_color(Color::Muted)
             .tooltip(Tooltip::text("Add Project"))
             .on_click(move |_event, window, cx| {
                 log::info!(

@@ -1,16 +1,16 @@
-name: Build Zed (project tabs) for Windows
+name: Build Zed (project tabs)
 
-# Builds a Windows Inno Setup installer (target/Zed-x86_64.exe) with the
-# browser-style project tabs, on a GitHub-hosted windows-2022 runner.
+# Builds installable artifacts with the browser-style project tabs:
+#   - Windows x86_64  -> Inno Setup installer (Zed-x86_64.exe)
+#   - macOS arm64     -> disk image (Zed-aarch64.dmg) for Apple Silicon
 #
-# When localize=zh-CN (the default for branch pushes) the zed-i18n toolchain
-# is cloned, the manifest is re-extracted against this fork, and the
-# Simplified Chinese translations are applied before bundling.
+# LOCALIZE defaults to zh-CN (Simplified Chinese) for branch pushes; run the
+# workflow manually with `localize: none` for the plain English UI.
 on:
   workflow_dispatch:
     inputs:
       architecture:
-        description: "Target architecture"
+        description: "Windows target architecture"
         required: false
         default: x86_64
         type: choice
@@ -30,7 +30,7 @@ on:
       - project-tabs
 
 concurrency:
-  group: build-windows-tabs-${{ github.ref }}-${{ inputs.architecture }}-${{ inputs.localize }}
+  group: build-tabs-${{ github.ref }}-${{ inputs.architecture }}-${{ inputs.localize }}
   cancel-in-progress: false
 
 env:
@@ -38,12 +38,11 @@ env:
   CARGO_TERM_COLOR: always
   ZED_I18N_REPO: https://github.com/LI-NA/zed-i18n
   ZED_VERSION: v1.27.0
-  # Branch pushes default to the Simplified Chinese build; a manual run can
-  # pick "none" to build the plain English UI.
   LOCALIZE: ${{ inputs.localize || 'zh-CN' }}
 
 jobs:
-  build:
+  windows:
+    name: Windows installer
     runs-on: windows-2022
     timeout-minutes: 360
     steps:
@@ -62,8 +61,7 @@ jobs:
         run: Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
 
       # Fast gate: type-check only the crates we touch so a compile error fails
-      # in ~20 min instead of after the full ~2h release build. The error lines
-      # are emitted as check-run annotations, which are readable without auth.
+      # early instead of after the full release build.
       - name: Type-check touched crates
         shell: pwsh
         run: |
@@ -79,10 +77,6 @@ jobs:
         with:
           enable-cache: true
 
-      # Clone zed-i18n, point it at this fork, regenerate the string manifest
-      # against our modified sources, then apply the Chinese translations into
-      # the fetched checkout. Occurrence line numbers shift because of our
-      # edits, so the re-extract is required before `apply`.
       - name: Apply Simplified Chinese UI (zed-i18n)
         if: env.LOCALIZE == 'zh-CN'
         shell: pwsh
@@ -90,9 +84,6 @@ jobs:
           $ErrorActionPreference = 'Stop'
           git clone --depth 1 $env:ZED_I18N_REPO i18n
 
-          # Build the lines as plain strings and join them, because inside @()
-          # the `,` operator binds tighter than `+` and would collapse every
-          # line into a single (invalid) line.
           $version_line = 'zed_version = "' + $env:ZED_VERSION + '"'
           $config = @(
             $version_line,
@@ -101,13 +92,11 @@ jobs:
             'cache_dir = ".cache/zed"'
           ) -join "`n"
           Set-Content -Path i18n/config/project.toml -Value $config -Encoding utf8
-          Get-Content i18n/config/project.toml
 
           Push-Location i18n
           uv python install 3.12
           uv sync
           uv run zed-i18n fetch-zed
-          # The clean-extract checkout is unused here; drop it to save disk.
           if (Test-Path .cache/zed/$env:ZED_VERSION-clean-extract) {
             Remove-Item -Recurse -Force .cache/zed/$env:ZED_VERSION-clean-extract
           }
@@ -124,9 +113,8 @@ jobs:
             "BUILD_DIR=${{ github.workspace }}" >> $env:GITHUB_ENV
           }
 
-      # Zed's bundle script hardcodes the Community edition of VS. GitHub's
-      # windows-2022 image ships Enterprise/BuildTools at a different path, so
-      # point it at whichever edition actually exists on this runner.
+      # Zed's bundle script hardcodes the Community edition of VS; the hosted
+      # runner ships Enterprise/BuildTools, so point it at whichever exists.
       - name: Point bundle-windows.ps1 at the runner's Visual Studio edition
         shell: pwsh
         run: |
@@ -134,16 +122,11 @@ jobs:
           Set-Location $env:BUILD_DIR
           $path = 'script/bundle-windows.ps1'
           $default = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\Launch-VsDevShell.ps1'
-          if (Test-Path $default) {
-            Write-Host "Community edition present; no patch needed."
-            exit 0
-          }
+          if (Test-Path $default) { exit 0 }
           foreach ($edition in @('Enterprise', 'Professional', 'BuildTools')) {
             $candidate = "C:\Program Files\Microsoft Visual Studio\2022\$edition\Common7\Tools\Launch-VsDevShell.ps1"
             if (Test-Path $candidate) {
-              $script = Get-Content $path -Raw
-              $script = $script.Replace($default, $candidate)
-              Set-Content -Path $path -Value $script -NoNewline
+              (Get-Content $path -Raw).Replace($default, $candidate) | Set-Content -Path $path -NoNewline
               Write-Host "Patched VS developer shell -> $candidate"
               exit 0
             }
@@ -154,8 +137,6 @@ jobs:
         shell: pwsh
         run: |
           Set-Location $env:BUILD_DIR
-          # Empty CI hides the release-only env checks and Sentry upload; we
-          # build an unsigned installer.
           $env:CI = ''
           ./script/bundle-windows.ps1 -Architecture ${{ inputs.architecture || 'x86_64' }}
 
@@ -171,3 +152,90 @@ jobs:
         if: always()
         shell: pwsh
         run: Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
+
+  macos:
+    name: macOS arm64 disk image
+    runs-on: macos-15
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup show
+          rustc --version
+          cargo --version
+
+      # Zed's bundle-mac requires macOS SDK 26+. The hosted image ships newer
+      # Xcode versions alongside the default one, so pick the newest that has
+      # the required SDK.
+      - name: Select an Xcode with macOS SDK 26+
+        run: |
+          set -euo pipefail
+          for app in $(ls -d /Applications/Xcode*.app 2>/dev/null | sort -rV); do
+            dev="$app/Contents/Developer"
+            sdk=$(DEVELOPER_DIR="$dev" xcrun --sdk macosx --show-sdk-version 2>/dev/null || echo 0)
+            major=${sdk%%.*}
+            echo "candidate: $app -> SDK $sdk"
+            if [ "${major:-0}" -ge 26 ]; then
+              echo "DEVELOPER_DIR=$dev" >> "$GITHUB_ENV"
+              echo "Selected $dev (SDK $sdk)"
+              exit 0
+            fi
+          done
+          echo "::error::No Xcode with macOS SDK 26 or newer found"
+          ls -d /Applications/Xcode*.app || true
+          exit 1
+
+      - name: Free disk space (CoreSimulator)
+        run: sudo rm -rf /Library/Developer/CoreSimulator || true
+
+      - name: Install uv
+        if: env.LOCALIZE == 'zh-CN'
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Apply Simplified Chinese UI (zed-i18n)
+        if: env.LOCALIZE == 'zh-CN'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$ZED_I18N_REPO" i18n
+          cat > i18n/config/project.toml <<EOF
+          zed_version = "$ZED_VERSION"
+          zed_repository = "${{ github.server_url }}/${{ github.repository }}"
+          zed_ref = "${{ github.ref_name }}"
+          cache_dir = ".cache/zed"
+          EOF
+          echo "--- config ---"; cat i18n/config/project.toml
+          cd i18n
+          uv python install 3.12
+          uv sync
+          uv run zed-i18n fetch-zed
+          rm -rf ".cache/zed/$ZED_VERSION-clean-extract"
+          uv run zed-i18n extract --zed-root ".cache/zed/$ZED_VERSION"
+          uv run zed-i18n apply --language zh-CN
+
+      - name: Select build directory
+        run: |
+          if [ "$LOCALIZE" = "zh-CN" ]; then
+            echo "BUILD_DIR=$GITHUB_WORKSPACE/i18n/.cache/zed/$ZED_VERSION" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build disk image
+        run: |
+          set -euo pipefail
+          cd "$BUILD_DIR"
+          chmod +x script/* || true
+          ./script/bundle-mac aarch64-apple-darwin
+
+      - name: Upload disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zed-macos-aarch64-${{ env.LOCALIZE }}-dmg
+          path: ${{ env.BUILD_DIR }}/target/Zed-aarch64.dmg
+          if-no-files-found: error
+          retention-days: 14

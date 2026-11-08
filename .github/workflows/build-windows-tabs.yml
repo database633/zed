@@ -236,6 +236,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Zed-macos-aarch64-${{ env.LOCALIZE }}-dmg
-          path: ${{ env.BUILD_DIR }}/target/Zed-aarch64.dmg
+          # bundle-mac writes the dmg under target/<triple>/<profile>/.
+          path: ${{ env.BUILD_DIR }}/target/aarch64-apple-darwin/release/Zed-aarch64.dmg
           if-no-files-found: error
           retention-days: 14

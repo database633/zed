@@ -33,12 +33,16 @@ concurrency:
   group: build-tabs-${{ github.ref }}-${{ inputs.architecture }}-${{ inputs.localize }}
   cancel-in-progress: false
 
+permissions:
+  contents: write
+
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   ZED_I18N_REPO: https://github.com/LI-NA/zed-i18n
   ZED_VERSION: v1.27.0
   LOCALIZE: ${{ inputs.localize || 'zh-CN' }}
+  RELEASE_TAG: tabs-latest
 
 jobs:
   windows:
@@ -240,3 +244,49 @@ jobs:
           path: ${{ env.BUILD_DIR }}/target/aarch64-apple-darwin/release/Zed-aarch64.dmg
           if-no-files-found: error
           retention-days: 14
+
+  publish:
+    name: Publish release assets
+    needs:
+      - windows
+      - macos
+    if: ${{ needs.windows.result == 'success' && needs.macos.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Zed-*
+          path: dist
+          merge-multiple: true
+
+      - name: Rename assets for the release
+        run: |
+          set -euo pipefail
+          ls -l dist
+          for f in dist/Zed-*.exe; do
+            [ -e "$f" ] || continue
+            arch="$(basename "$f" .exe)"; arch="${arch#Zed-}"
+            cp "$f" "dist/Zed-windows-${arch}-${LOCALIZE}.exe"
+          done
+          if [ -f dist/Zed-aarch64.dmg ]; then
+            cp dist/Zed-aarch64.dmg "dist/Zed-macos-aarch64-${LOCALIZE}.dmg"
+          fi
+          ls -l dist
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TITLE="Zed (project tabs) — ${LOCALIZE}"
+          NOTES="Latest build of the project-tabs fork. Locale: ${LOCALIZE}. Commit: ${GITHUB_SHA}."
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES"
+          else
+            gh release create "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --latest
+          fi
+          gh release upload "$RELEASE_TAG" \
+            dist/Zed-windows-*.exe \
+            dist/Zed-macos-*.dmg \
+            --clobber

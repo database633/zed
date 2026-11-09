@@ -117,6 +117,19 @@ jobs:
             "BUILD_DIR=${{ github.workspace }}" >> $env:GITHUB_ENV
           }
 
+      # Verify the localized checkout compiles before the long bundle step.
+      # Failures are re-emitted as annotations, which are readable without
+      # signing in to Actions.
+      - name: Verify localized checkout compiles
+        shell: pwsh
+        run: |
+          Set-Location $env:BUILD_DIR
+          cargo check -p zed --message-format short 2>&1 | Tee-Object -FilePath check-localized.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content check-localized.log -Tail 30 | ForEach-Object { "::error::$_" }
+            exit 1
+          }
+
       # Zed's bundle script hardcodes the Community edition of VS; the hosted
       # runner ships Enterprise/BuildTools, so point it at whichever exists.
       - name: Point bundle-windows.ps1 at the runner's Visual Studio edition
@@ -142,7 +155,17 @@ jobs:
         run: |
           Set-Location $env:BUILD_DIR
           $env:CI = ''
-          ./script/bundle-windows.ps1 -Architecture ${{ inputs.architecture || 'x86_64' }}
+          $log = Join-Path $env:RUNNER_TEMP 'bundle.log'
+          try {
+            ./script/bundle-windows.ps1 -Architecture ${{ inputs.architecture || 'x86_64' }} *>&1 |
+              Tee-Object -FilePath $log
+            if ($LASTEXITCODE -ne 0) { throw "bundle-windows.ps1 exited with $LASTEXITCODE" }
+          } catch {
+            "::error::Windows bundle failed: $_"
+            Get-Content $log -Tail 40 -ErrorAction SilentlyContinue |
+              ForEach-Object { "::error::$_" }
+            exit 1
+          }
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -229,12 +252,27 @@ jobs:
             echo "BUILD_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           fi
 
+      # Same fast gate as Windows: catch compile breakage early and surface the
+      # error as annotations, which are readable without signing in.
+      - name: Verify localized checkout compiles
+        run: |
+          set -o pipefail
+          cd "$BUILD_DIR"
+          if ! cargo check -p zed --message-format short 2>&1 | tee /tmp/check-localized.log; then
+            while IFS= read -r line; do echo "::error::$line"; done < <(tail -n 30 /tmp/check-localized.log)
+            exit 1
+          fi
+
       - name: Build disk image
         run: |
-          set -euo pipefail
+          set -o pipefail
           cd "$BUILD_DIR"
           chmod +x script/* || true
-          ./script/bundle-mac aarch64-apple-darwin
+          if ! ./script/bundle-mac aarch64-apple-darwin 2>&1 | tee /tmp/bundle.log; then
+            echo "::error::macOS bundle failed"
+            while IFS= read -r line; do echo "::error::$line"; done < <(tail -n 40 /tmp/bundle.log)
+            exit 1
+          fi
 
       - name: Upload disk image
         uses: actions/upload-artifact@v4

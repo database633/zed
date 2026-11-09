@@ -314,17 +314,26 @@ jobs:
 
       - name: Create or update the release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          # No checkout in this job, so tell gh which repo to talk to instead of
+          # letting it infer one from a local git remote.
+          GH_REPO: ${{ github.repository }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           TITLE="Zed (project tabs) — ${LOCALIZE}"
           NOTES="Latest build of the project-tabs fork. Locale: ${LOCALIZE}. Commit: ${GITHUB_SHA}."
+          run_gh() {
+            if ! out=$("$@" 2>&1); then
+              echo "::error::gh failed: $* :: $out"
+              exit 1
+            fi
+          }
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES"
+            run_gh gh release edit "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES"
           else
-            gh release create "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --latest
+            run_gh gh release create "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --latest
           fi
-          gh release upload "$RELEASE_TAG" \
+          run_gh gh release upload "$RELEASE_TAG" \
             dist/Zed-windows-*.exe \
             dist/Zed-macos-*.dmg \
             --clobber

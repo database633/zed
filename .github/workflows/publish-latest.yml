@@ -60,8 +60,16 @@ jobs:
           [ -n "$win" ] || { echo "::error::no .exe artifact found in the run"; exit 1; }
           [ -n "$mac" ] || { echo "::error::no .dmg artifact found in the run"; exit 1; }
 
-          cp "$win" "dist/Zed-windows-x86_64-${LOCALIZE}.exe"
-          cp "$mac" "dist/Zed-macos-aarch64-${LOCALIZE}.dmg"
+          # Derive the architecture from the artifact names so the copy and the
+          # upload always agree on the same file name.
+          win_arch="$(basename "$win" .exe)"; win_arch="${win_arch#Zed-}"
+          mac_arch="$(basename "$mac" .dmg)"; mac_arch="${mac_arch#Zed-}"
+          WIN_ASSET="Zed-windows-${win_arch}-${LOCALIZE}.exe"
+          MAC_ASSET="Zed-macos-${mac_arch}-${LOCALIZE}.dmg"
+          echo "assets: $WIN_ASSET / $MAC_ASSET"
+
+          cp "$win" "dist/$WIN_ASSET"
+          cp "$mac" "dist/$MAC_ASSET"
 
           TITLE="Zed (project tabs) — ${LOCALIZE}"
           NOTES="Built from run ${{ steps.resolve.outputs.run }}."
@@ -80,8 +88,8 @@ jobs:
           fi
 
           run_gh gh release upload "$RELEASE_TAG" \
-            "dist/Zed-windows-${LOCALIZE}.exe" \
-            "dist/Zed-macos-aarch64-${LOCALIZE}.dmg" \
+            "dist/$WIN_ASSET" \
+            "dist/$MAC_ASSET" \
             --clobber
 
           echo "Published https://github.com/${GH_REPO}/releases/tag/${RELEASE_TAG}"

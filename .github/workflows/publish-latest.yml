@@ -1,0 +1,87 @@
+name: Publish latest build
+
+# Publishes the Windows installer and macOS dmg from an existing build run to
+# the rolling `tabs-latest` release. Use this to publish without rebuilding.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Build run id to publish (leave empty for the latest successful build)"
+        required: false
+        default: ""
+      locale:
+        description: "Locale suffix used in the asset names"
+        required: false
+        default: zh-CN
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: tabs-latest
+
+jobs:
+  publish:
+    name: Publish release assets
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Resolve the build run
+        id: resolve
+        run: |
+          set -uo pipefail
+          id="${{ inputs.run_id }}"
+          if [ -z "$id" ]; then
+            id=$(gh run list --workflow build-windows-tabs.yml --status success --limit 1 \
+                   --json databaseId -q '.[0].databaseId')
+          fi
+          if [ -z "$id" ] || [ "$id" = "null" ]; then
+            echo "::error::No successful build run found for build-windows-tabs.yml"
+            exit 1
+          fi
+          echo "run=$id" >> "$GITHUB_OUTPUT"
+          echo "Publishing artifacts from run $id"
+
+      - name: Download artifacts
+        run: |
+          set -euo pipefail
+          gh run download "${{ steps.resolve.outputs.run }}" -D dist
+          find dist -type f | sort
+
+      - name: Create or update the release
+        env:
+          LOCALIZE: ${{ inputs.locale }}
+        run: |
+          set -uo pipefail
+          win=$(find dist -name '*.exe' | head -n1)
+          mac=$(find dist -name '*.dmg' | head -n1)
+          [ -n "$win" ] || { echo "::error::no .exe artifact found in the run"; exit 1; }
+          [ -n "$mac" ] || { echo "::error::no .dmg artifact found in the run"; exit 1; }
+
+          cp "$win" "dist/Zed-windows-x86_64-${LOCALIZE}.exe"
+          cp "$mac" "dist/Zed-macos-aarch64-${LOCALIZE}.dmg"
+
+          TITLE="Zed (project tabs) — ${LOCALIZE}"
+          NOTES="Built from run ${{ steps.resolve.outputs.run }}."
+
+          run_gh() {
+            if ! out=$("$@" 2>&1); then
+              echo "::error::gh failed: $* :: $out"
+              exit 1
+            fi
+          }
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            run_gh gh release edit "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES"
+          else
+            run_gh gh release create "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --latest
+          fi
+
+          run_gh gh release upload "$RELEASE_TAG" \
+            "dist/Zed-windows-${LOCALIZE}.exe" \
+            "dist/Zed-macos-aarch64-${LOCALIZE}.dmg" \
+            --clobber
+
+          echo "Published https://github.com/${GH_REPO}/releases/tag/${RELEASE_TAG}"

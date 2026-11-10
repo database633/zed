@@ -1,0 +1,339 @@
+name: Build Zed (project tabs)
+
+# Builds installable artifacts with the browser-style project tabs:
+#   - Windows x86_64  -> Inno Setup installer (Zed-x86_64.exe)
+#   - macOS arm64     -> disk image (Zed-aarch64.dmg) for Apple Silicon
+#
+# LOCALIZE defaults to zh-CN (Simplified Chinese) for branch pushes; run the
+# workflow manually with `localize: none` for the plain English UI.
+on:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: "Windows target architecture"
+        required: false
+        default: x86_64
+        type: choice
+        options:
+          - x86_64
+          - aarch64
+      localize:
+        description: "UI localization applied before bundling"
+        required: false
+        default: zh-CN
+        type: choice
+        options:
+          - zh-CN
+          - none
+  push:
+    branches:
+      - project-tabs
+
+concurrency:
+  group: build-tabs-${{ github.ref }}-${{ inputs.architecture }}-${{ inputs.localize }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  ZED_I18N_REPO: https://github.com/LI-NA/zed-i18n
+  ZED_VERSION: v1.27.0
+  LOCALIZE: ${{ inputs.localize || 'zh-CN' }}
+  RELEASE_TAG: tabs-latest
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        shell: pwsh
+        run: |
+          rustup show
+          rustc --version
+          cargo --version
+
+      - name: Report initial disk space
+        shell: pwsh
+        run: Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
+
+      # Fast gate: type-check only the crates we touch so a compile error fails
+      # early instead of after the full release build.
+      - name: Type-check touched crates
+        shell: pwsh
+        run: |
+          cargo check -p workspace -p title_bar --message-format short 2>&1 | Tee-Object -FilePath check.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content check.log -Tail 30 | ForEach-Object { "::error::$_" }
+            exit 1
+          }
+
+      - name: Install uv
+        if: env.LOCALIZE == 'zh-CN'
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Apply Simplified Chinese UI (zed-i18n)
+        if: env.LOCALIZE == 'zh-CN'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 $env:ZED_I18N_REPO i18n
+
+          $version_line = 'zed_version = "' + $env:ZED_VERSION + '"'
+          $config = @(
+            $version_line,
+            'zed_repository = "${{ github.server_url }}/${{ github.repository }}"',
+            'zed_ref = "${{ github.ref_name }}"',
+            'cache_dir = ".cache/zed"'
+          ) -join "`n"
+          Set-Content -Path i18n/config/project.toml -Value $config -Encoding utf8
+
+          Push-Location i18n
+          uv python install 3.12
+          uv sync
+          uv run zed-i18n fetch-zed
+          if (Test-Path .cache/zed/$env:ZED_VERSION-clean-extract) {
+            Remove-Item -Recurse -Force .cache/zed/$env:ZED_VERSION-clean-extract
+          }
+          uv run zed-i18n extract --zed-root .cache/zed/$env:ZED_VERSION
+          uv run zed-i18n apply --language zh-CN
+          Pop-Location
+
+      - name: Select build directory
+        shell: pwsh
+        run: |
+          if ($env:LOCALIZE -eq 'zh-CN') {
+            "BUILD_DIR=${{ github.workspace }}\i18n\.cache\zed\$env:ZED_VERSION" >> $env:GITHUB_ENV
+          } else {
+            "BUILD_DIR=${{ github.workspace }}" >> $env:GITHUB_ENV
+          }
+
+      # Verify the localized checkout compiles before the long bundle step.
+      # Failures are re-emitted as annotations, which are readable without
+      # signing in to Actions.
+      - name: Verify localized checkout compiles
+        shell: pwsh
+        run: |
+          Set-Location $env:BUILD_DIR
+          cargo check -p zed --message-format short 2>&1 | Tee-Object -FilePath check-localized.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content check-localized.log -Tail 30 | ForEach-Object { "::error::$_" }
+            exit 1
+          }
+
+      # Zed's bundle script hardcodes the Community edition of VS; the hosted
+      # runner ships Enterprise/BuildTools, so point it at whichever exists.
+      - name: Point bundle-windows.ps1 at the runner's Visual Studio edition
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:BUILD_DIR
+          $path = 'script/bundle-windows.ps1'
+          $default = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\Launch-VsDevShell.ps1'
+          if (Test-Path $default) { exit 0 }
+          foreach ($edition in @('Enterprise', 'Professional', 'BuildTools')) {
+            $candidate = "C:\Program Files\Microsoft Visual Studio\2022\$edition\Common7\Tools\Launch-VsDevShell.ps1"
+            if (Test-Path $candidate) {
+              (Get-Content $path -Raw).Replace($default, $candidate) | Set-Content -Path $path -NoNewline
+              Write-Host "Patched VS developer shell -> $candidate"
+              exit 0
+            }
+          }
+          Write-Error "No Visual Studio 2022 developer shell found on this runner"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          Set-Location $env:BUILD_DIR
+          $env:CI = ''
+          $log = Join-Path $env:RUNNER_TEMP 'bundle.log'
+          try {
+            ./script/bundle-windows.ps1 -Architecture ${{ inputs.architecture || 'x86_64' }} *>&1 |
+              Tee-Object -FilePath $log
+            if ($LASTEXITCODE -ne 0) { throw "bundle-windows.ps1 exited with $LASTEXITCODE" }
+          } catch {
+            "::error::Windows bundle failed: $_"
+            Get-Content $log -Tail 40 -ErrorAction SilentlyContinue |
+              ForEach-Object { "::error::$_" }
+            exit 1
+          }
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zed-windows-${{ inputs.architecture || 'x86_64' }}-${{ env.LOCALIZE }}-installer
+          path: ${{ env.BUILD_DIR }}/target/Zed-${{ inputs.architecture || 'x86_64' }}.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Report final disk space
+        if: always()
+        shell: pwsh
+        run: Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
+
+  macos:
+    name: macOS arm64 disk image
+    runs-on: macos-15
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup show
+          rustc --version
+          cargo --version
+
+      # Zed's bundle-mac requires macOS SDK 26+. The hosted image ships newer
+      # Xcode versions alongside the default one, so pick the newest that has
+      # the required SDK.
+      - name: Select an Xcode with macOS SDK 26+
+        run: |
+          set -euo pipefail
+          for app in $(ls -d /Applications/Xcode*.app 2>/dev/null | sort -rV); do
+            dev="$app/Contents/Developer"
+            sdk=$(DEVELOPER_DIR="$dev" xcrun --sdk macosx --show-sdk-version 2>/dev/null || echo 0)
+            major=${sdk%%.*}
+            echo "candidate: $app -> SDK $sdk"
+            if [ "${major:-0}" -ge 26 ]; then
+              echo "DEVELOPER_DIR=$dev" >> "$GITHUB_ENV"
+              echo "Selected $dev (SDK $sdk)"
+              exit 0
+            fi
+          done
+          echo "::error::No Xcode with macOS SDK 26 or newer found"
+          ls -d /Applications/Xcode*.app || true
+          exit 1
+
+      - name: Free disk space (CoreSimulator)
+        run: sudo rm -rf /Library/Developer/CoreSimulator || true
+
+      - name: Install uv
+        if: env.LOCALIZE == 'zh-CN'
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Apply Simplified Chinese UI (zed-i18n)
+        if: env.LOCALIZE == 'zh-CN'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$ZED_I18N_REPO" i18n
+          cat > i18n/config/project.toml <<EOF
+          zed_version = "$ZED_VERSION"
+          zed_repository = "${{ github.server_url }}/${{ github.repository }}"
+          zed_ref = "${{ github.ref_name }}"
+          cache_dir = ".cache/zed"
+          EOF
+          echo "--- config ---"; cat i18n/config/project.toml
+          cd i18n
+          uv python install 3.12
+          uv sync
+          uv run zed-i18n fetch-zed
+          rm -rf ".cache/zed/$ZED_VERSION-clean-extract"
+          uv run zed-i18n extract --zed-root ".cache/zed/$ZED_VERSION"
+          uv run zed-i18n apply --language zh-CN
+
+      - name: Select build directory
+        run: |
+          if [ "$LOCALIZE" = "zh-CN" ]; then
+            echo "BUILD_DIR=$GITHUB_WORKSPACE/i18n/.cache/zed/$ZED_VERSION" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          fi
+
+      # Same fast gate as Windows: catch compile breakage early and surface the
+      # error as annotations, which are readable without signing in.
+      - name: Verify localized checkout compiles
+        run: |
+          set -o pipefail
+          cd "$BUILD_DIR"
+          if ! cargo check -p zed --message-format short 2>&1 | tee /tmp/check-localized.log; then
+            while IFS= read -r line; do echo "::error::$line"; done < <(tail -n 30 /tmp/check-localized.log)
+            exit 1
+          fi
+
+      - name: Build disk image
+        run: |
+          set -o pipefail
+          cd "$BUILD_DIR"
+          chmod +x script/* || true
+          if ! ./script/bundle-mac aarch64-apple-darwin 2>&1 | tee /tmp/bundle.log; then
+            echo "::error::macOS bundle failed"
+            while IFS= read -r line; do echo "::error::$line"; done < <(tail -n 40 /tmp/bundle.log)
+            exit 1
+          fi
+
+      - name: Upload disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zed-macos-aarch64-${{ env.LOCALIZE }}-dmg
+          # bundle-mac writes the dmg under target/<triple>/<profile>/.
+          path: ${{ env.BUILD_DIR }}/target/aarch64-apple-darwin/release/Zed-aarch64.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish release assets
+    needs:
+      - windows
+      - macos
+    if: ${{ needs.windows.result == 'success' && needs.macos.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Zed-*
+          path: dist
+          merge-multiple: true
+
+      - name: Rename assets for the release
+        run: |
+          set -euo pipefail
+          ls -l dist
+          for f in dist/Zed-*.exe; do
+            [ -e "$f" ] || continue
+            arch="$(basename "$f" .exe)"; arch="${arch#Zed-}"
+            cp "$f" "dist/Zed-windows-${arch}-${LOCALIZE}.exe"
+          done
+          if [ -f dist/Zed-aarch64.dmg ]; then
+            cp dist/Zed-aarch64.dmg "dist/Zed-macos-aarch64-${LOCALIZE}.dmg"
+          fi
+          ls -l dist
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          # No checkout in this job, so tell gh which repo to talk to instead of
+          # letting it infer one from a local git remote.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          TITLE="Zed (project tabs) — ${LOCALIZE}"
+          NOTES="Latest build of the project-tabs fork. Locale: ${LOCALIZE}. Commit: ${GITHUB_SHA}."
+          run_gh() {
+            if ! out=$("$@" 2>&1); then
+              echo "::error::gh failed: $* :: $out"
+              exit 1
+            fi
+          }
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            run_gh gh release edit "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES"
+          else
+            run_gh gh release create "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --latest
+          fi
+          run_gh gh release upload "$RELEASE_TAG" \
+            dist/Zed-windows-*.exe \
+            dist/Zed-macos-*.dmg \
+            --clobber
